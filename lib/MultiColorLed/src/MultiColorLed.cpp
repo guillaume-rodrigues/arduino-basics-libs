@@ -1,10 +1,11 @@
-#include "MultiColorLed.h"
 #include <Arduino.h>
+#include "MultiColorLed.h"
+#include "../../Core/src/Core.h"
 
 /**
  * Dummy fade with three loops
  */
-void MultiColorLed::dummyFade() {
+void MultiColorLed::dummyFade() const {
     int fadeDelay = 1;
     // Iterate over possible red values
     for (int redValue = 0; redValue < 255; redValue += 10) {
@@ -22,7 +23,7 @@ void MultiColorLed::dummyFade() {
 /**
  * Fade following the sequence red -> green -> blue -> red
  */
-void MultiColorLed::simpleFade() {
+void MultiColorLed::simpleFade() const {
     int step = 1;
     int nextColorIndex;
     int values[3] = {250, 0, 0}; // Red, Green, Blue
@@ -42,68 +43,92 @@ void MultiColorLed::simpleFade() {
 /**
  * Use random value every baseFadeDelay for r, g, b led
  */
-void MultiColorLed::randomMode() {
-    int colorTotals = 0;
-    int currValue;
-    int currRank;
-    int colorValues[3] = {0, 0, 0};
-    for (int i = 0; i < 3; ++i) {
-        currValue = (int) random(255 - colorTotals);
-        currRank = (int) random(0, 3);
-        while (colorValues[currRank] != 0) {
-            currRank = (int) random(0, 3);
-        }
-        colorTotals += currValue;
-        colorValues[currRank] = currValue;
-    }
+void MultiColorLed::randomMode() const {
+    auto colorValues = Core::RandomColor();
     sendColors(colorValues[0], colorValues[1], colorValues[2], 100);
+    free((void *) colorValues);
 }
-
 
 /**
  * Ask color value to the user via serial port
  */
 void MultiColorLed::onDemandMode() {
-    Serial.println("What color do you want ?");
-    Serial.println("(Accepted values are r,g,b or #rrggbb in exa)");
+    char *serialInput = MultiColorLed::askValuesForUser("What color do you want ?",
+                                                        "(Accepted values are r,g,b or #rrggbb in exa)");
+    int colorValues[3] = {0, 0, 0};
+    Core::ParseColorFromString(serialInput, colorValues);
+    sendColors(colorValues[0], colorValues[1], colorValues[2], 0);
+    free((void *) serialInput);
+}
+
+/**
+ * Ask to the user the algorithm of color to be used in led
+ */
+void MultiColorLed::algorithmMode() {
+    // Fade delay in milliseconds
+    int fadeDelay = 1000;
+    // Ask the next color algorithm to user
+    char *serialInput = MultiColorLed::askValuesForUser("What algorithm do you want ?",
+                                                        "(Accepted values are string of r g b separated by comma)");
+    // Nice print asked colors
+    Serial.print("Asked : \t\t");
+    Serial.println(serialInput);
+    // Parse asked color to color sequence
+    auto colorSequence = Core::ParseAlgorithmFromString(serialInput);
+    // Print current color
+    Serial.print("Current : \t");
+    for (unsigned int sequenceIndex = 0; sequenceIndex < strlen(colorSequence); ++sequenceIndex) {
+        switch (colorSequence[sequenceIndex]) {
+            case 'r':
+                sendColors(255, 0, 0, 0);
+                Serial.print("r ");
+                break;
+            case 'g':
+                sendColors(0, 255, 0, 0);
+                Serial.print("g ");
+                break;
+            case 'b':
+                sendColors(0, 0, 255, 0);
+                Serial.print("b ");
+                break;
+            default:
+                break;
+        }
+        delay(fadeDelay);
+    }
+    Serial.println("\nOther ?");
+    free((void *) serialInput);
+    free((void *) colorSequence);
+}
+
+/**
+ * Ask to the user a value from Serial com
+ * @param message The message to be print to the user in Serial com
+ * @param hint The hint for values to be print to the user in Serial com
+ * @return The provided message from Serial com
+ */
+char *MultiColorLed::askValuesForUser(char const *message, char const *hint) {
+    MultiColorLed::clearReadBuffer();
+    if (firstLoop) {
+        Serial.println(message);
+        Serial.println(hint);
+        firstLoop = false;
+    }
     while (!Serial.available()) {
         // Wait for available value from serial com
     }
+    delay(100); // Wait for data to be sent
+    int availableByte = Serial.available();
     // Read the answer of the user
-    auto serialInput = Serial.readString();
-    int colorValues[3] = {0, 0, 0};
-    // Reading value for #rrggbb
-    if (serialInput.charAt(0) == '#' && serialInput.length() == 7) {
-        // Get the red value in exa
-        colorValues[0] = (int) strtol(serialInput.substring(1, 3).c_str(), nullptr, 16);
-        // Get the green value in exa
-        colorValues[1] = (int) strtol(serialInput.substring(3, 5).c_str(), nullptr, 16);
-        // Get the blue value in exa
-        colorValues[2] = (int) strtol(serialInput.substring(5, 7).c_str(), nullptr, 16);
-    } else { // Assume the value is r,v,b
-        // Index on color number
-        int currentValue = 0;
-        // Temporary char array use to handle string conversion
-        auto tmpCharArray = (char *) malloc(sizeof(char) * serialInput.length() + 1);
-        // Contains the string value of each color
-        char *colorValue = nullptr;
-        // Copy value of string to char array
-        strcpy(tmpCharArray, serialInput.c_str());
-        // Get the next value separated by ,
-        const char *inputColorPart = strtok_r(tmpCharArray, ",", &colorValue);
-        // While there is a next value, or we've got the three required values
-        while (inputColorPart != nullptr && currentValue < 3) {
-            // Get the numeric value from the string
-            colorValues[currentValue] = (int) strtol(inputColorPart, nullptr, 10);
-            currentValue++;
-            // Get the next value
-            inputColorPart = strtok_r(nullptr, ",", &colorValue);
-        }
-        // Free memory
-        free((void *) inputColorPart);
-        free((void *) tmpCharArray);
+    auto serialInput = (char *) malloc(sizeof(char) * availableByte + 1);
+    // Clear content
+    sprintf(serialInput, "%s", "");
+    // For each available bytes
+    for (int inputIndex = 0; inputIndex < availableByte; ++inputIndex) {
+        serialInput[inputIndex] = (char) Serial.read(); // Read the first byte
     }
-    sendColors(colorValues[0], colorValues[1], colorValues[2], 0);
+    serialInput[availableByte] = '\0';
+    return serialInput;
 }
 
 /**
@@ -113,18 +138,19 @@ void MultiColorLed::onDemandMode() {
  * @param blueValue The value of blue fade
  * @param fadeDelay The value of fade delay
  */
-void MultiColorLed::sendColors(int redValue, int greenValue, int blueValue, int fadeDelay) {
+void MultiColorLed::sendColors(int redValue, int greenValue, int blueValue, int fadeDelay) const {
     // Write color values to pins
     analogWrite(redPin, redValue);
     analogWrite(greenPin, greenValue);
     analogWrite(bluePin, blueValue);
     // Wait for next fade
     delay(fadeDelay);
-    // Debug
-    auto result = (char *) malloc(100 * sizeof(char));
-    sprintf(result, "Send red - green - blue : %d - %d - %d", redValue, greenValue, blueValue);
-    Serial.println(result);
-    free(result);
+    if (debugMode) {
+        auto result = (char *) malloc(100 * sizeof(char));
+        sprintf(result, "Send red - green - blue : %d - %d - %d", redValue, greenValue, blueValue);
+        Serial.println(result);
+        free(result);
+    }
 }
 
 /**
@@ -142,6 +168,7 @@ void MultiColorLed::init() {
     Serial.println("\t2 - simple mode");
     Serial.println("\t3 - random mode");
     Serial.println("\t4 - on demand mode");
+    Serial.println("\t5 - algorithm mode");
     Serial.println("\tother - stop");
     while (!Serial.available()) {
         // Wait for available value from serial com
@@ -154,13 +181,13 @@ void MultiColorLed::init() {
     pinMode(MultiColorLed::bluePin, OUTPUT);
     MultiColorLed::sendColors(0, 0, 0);
     // Random seed with noise in analog pin 0
-    randomSeed(analogRead(0));
+    srand(analogRead(0));
 }
 
 /**
  * Run the component depending on fade mode
  */
-void MultiColorLed::run() const {
+void MultiColorLed::run() {
     switch (fadeMode) {
         case 1:
             dummyFade();
@@ -174,9 +201,21 @@ void MultiColorLed::run() const {
         case 4:
             onDemandMode();
             break;
+        case 5:
+            algorithmMode();
+            break;
         default:
             Serial.println("404 - Mode not found");
             delay(4294967295); // Wait for a long time (~50 days)
             break;
+    }
+}
+
+/**
+ * Clear serial read buffer, in order to remove unexpected char
+ */
+void MultiColorLed::clearReadBuffer() {
+    while (Serial.available() > 0) {
+        Serial.read();
     }
 }
